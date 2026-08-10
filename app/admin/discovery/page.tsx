@@ -15,7 +15,7 @@ type StoreRow = {
 
 export const dynamic = 'force-dynamic';
 
-export default async function DiscoveryAdminPage() {
+export default async function DiscoveryAdminPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   if (!isSupabaseConfigured()) {
     return (
       <main style={{ maxWidth: 900, margin: '40px auto', padding: 24, fontFamily: 'system-ui' }}>
@@ -24,6 +24,11 @@ export default async function DiscoveryAdminPage() {
       </main>
     );
   }
+
+  const params = (await searchParams) || {};
+  const checked = typeof params.checked === 'string' ? params.checked : null;
+  const verified = typeof params.verified === 'string' ? params.verified : null;
+  const products = typeof params.products === 'string' ? params.products : null;
 
   const stores = await supabaseRest<StoreRow[]>(
     'stores?select=id,domain,name,description,homepage_url,logo_url,discovery_score,source_first_detected_at,first_seen_at,status&status=eq.pending&order=discovery_score.desc,first_seen_at.desc&limit=100'
@@ -39,6 +44,30 @@ export default async function DiscoveryAdminPage() {
         </div>
         <a href="/" style={{ color: 'inherit' }}>View site</a>
       </div>
+
+      <section style={{ border: '1px solid #ddd', borderRadius: 16, padding: 20, marginBottom: 24 }}>
+        <h2 style={{ marginTop: 0 }}>Free batch discovery</h2>
+        <p style={{ opacity: 0.72, marginTop: 0 }}>
+          Paste up to 25 domains or storefront URLs. EarlyFind will visit each public storefront, verify Shopify fingerprints, import public products when available, and add valid stores to the review queue.
+        </p>
+        <form action="/api/admin/discover" method="post">
+          <textarea
+            name="domains"
+            required
+            rows={7}
+            placeholder={'example-store.com\nhttps://anotherbrand.com\nthirdstore.com'}
+            style={{ width: '100%', boxSizing: 'border-box', padding: 14, borderRadius: 12, border: '1px solid #ccc', font: 'inherit', resize: 'vertical' }}
+          />
+          <button type="submit" style={{ marginTop: 12, padding: '11px 16px', borderRadius: 10, border: 0, cursor: 'pointer', fontWeight: 700 }}>
+            Verify & import
+          </button>
+        </form>
+        {checked && (
+          <p style={{ marginBottom: 0, fontWeight: 600 }}>
+            Last batch: checked {checked} · verified {verified || '0'} Shopify stores · imported {products || '0'} products
+          </p>
+        )}
+      </section>
 
       <div style={{ display: 'grid', gap: 16 }}>
         {stores.map((store) => (
@@ -66,7 +95,7 @@ export default async function DiscoveryAdminPage() {
 
         {stores.length === 0 && (
           <div style={{ border: '1px dashed #ccc', borderRadius: 16, padding: 32, textAlign: 'center', opacity: 0.7 }}>
-            No pending stores. The next discovery run will populate this queue.
+            No pending stores yet. Use the free batch importer above to seed the first real brands.
           </div>
         )}
       </div>
