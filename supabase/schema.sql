@@ -72,13 +72,19 @@ alter table public.products enable row level security;
 alter table public.discovery_runs enable row level security;
 alter table public.outbound_clicks enable row level security;
 
-create policy if not exists "public approved stores" on public.stores
-for select using (status = 'approved');
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'stores' and policyname = 'public approved stores') then
+    create policy "public approved stores" on public.stores for select using (status = 'approved');
+  end if;
 
-create policy if not exists "public approved products" on public.products
-for select using (
-  exists (
-    select 1 from public.stores s
-    where s.id = products.store_id and s.status = 'approved'
-  )
-);
+  if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'products' and policyname = 'public approved products') then
+    create policy "public approved products" on public.products
+    for select using (
+      exists (
+        select 1 from public.stores s
+        where s.id = products.store_id and s.status = 'approved'
+      )
+    );
+  end if;
+end $$;
