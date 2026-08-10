@@ -13,7 +13,10 @@ function authorized(request: NextRequest) {
 
 async function runDiscovery() {
   const startedAt = new Date().toISOString();
-  const candidates = await getRecentShopifyCandidates(7, Number(process.env.DISCOVERY_LIMIT || 60));
+  const hasBuiltWith = Boolean(process.env.BUILTWITH_API_KEY);
+  const candidates = hasBuiltWith
+    ? await getRecentShopifyCandidates(7, Number(process.env.DISCOVERY_LIMIT || 60))
+    : [];
   const errors: Array<{ domain: string; error: string }> = [];
   let verifiedCount = 0;
   let productCount = 0;
@@ -21,7 +24,7 @@ async function runDiscovery() {
   const runRows = await supabaseRest<Array<{ id: string }>>('discovery_runs', {
     method: 'POST',
     prefer: 'return=representation',
-    body: JSON.stringify({ source: 'builtwith', started_at: startedAt, candidates_found: candidates.length }),
+    body: JSON.stringify({ source: hasBuiltWith ? 'builtwith' : 'no-paid-provider', started_at: startedAt, candidates_found: candidates.length }),
   });
   const runId = runRows[0]?.id;
 
@@ -29,7 +32,7 @@ async function runDiscovery() {
     try {
       const verified = await verifyShopifyStore(candidate.domain);
       if (!verified) continue;
-      const result = await persistCandidate(candidate, verified);
+      const result = await persistCandidate({ ...candidate, source: 'builtwith' }, verified);
       verifiedCount += 1;
       productCount += result.productCount;
     } catch (error) {
@@ -50,7 +53,14 @@ async function runDiscovery() {
     });
   }
 
-  return { candidates: candidates.length, verified: verifiedCount, products: productCount, errors: errors.length };
+  return {
+    provider: hasBuiltWith ? 'builtwith' : 'none',
+    candidates: candidates.length,
+    verified: verifiedCount,
+    products: productCount,
+    errors: errors.length,
+    message: hasBuiltWith ? undefined : 'No paid discovery provider configured; use /admin/discovery for free batch imports.',
+  };
 }
 
 export async function GET(request: NextRequest) {
