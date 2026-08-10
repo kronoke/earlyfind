@@ -1,4 +1,3 @@
-import { BuiltWithCandidate } from './builtwith';
 import { supabaseRest } from './supabase-rest';
 
 const USER_AGENT = 'EarlyFindBot/0.1 (+https://earlyfinds.store; discovery crawler)';
@@ -13,6 +12,18 @@ type ShopifyProduct = {
 };
 
 type ShopifyProductsResponse = { products?: ShopifyProduct[] };
+
+export type DiscoveryCandidate = {
+  domain: string;
+  source?: string;
+  country?: string;
+  firstDetectedAt?: string;
+  lastDetectedAt?: string;
+  metadata?: Record<string, unknown>;
+  spend?: number;
+  sku?: number;
+  revenue?: number;
+};
 
 export type VerifiedStore = {
   domain: string;
@@ -90,7 +101,13 @@ async function fetchText(url: string, timeoutMs = 9000) {
 }
 
 export async function verifyShopifyStore(input: string): Promise<VerifiedStore | null> {
-  const domain = normalizeDomain(input);
+  let domain: string;
+  try {
+    domain = normalizeDomain(input);
+  } catch {
+    return null;
+  }
+
   const homepageUrl = `https://${domain}`;
 
   let homepage: Response;
@@ -153,8 +170,9 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   };
 }
 
-export async function persistCandidate(candidate: BuiltWithCandidate, verified: VerifiedStore) {
+export async function persistCandidate(candidate: DiscoveryCandidate, verified: VerifiedStore) {
   const now = new Date().toISOString();
+  const source = candidate.source || 'manual';
   const storeRows = await supabaseRest<Array<{ id: string }>>('stores?on_conflict=domain', {
     method: 'POST',
     prefer: 'resolution=merge-duplicates,return=representation',
@@ -166,19 +184,25 @@ export async function persistCandidate(candidate: BuiltWithCandidate, verified: 
       logo_url: verified.logoUrl ?? null,
       description: verified.description ?? null,
       country: candidate.country ?? null,
-      source: 'builtwith',
+      source,
       source_first_detected_at: candidate.firstDetectedAt ?? null,
       estimated_launch_at: candidate.firstDetectedAt ?? now,
       last_seen_at: now,
       discovery_score: verified.score,
       shopify_verified: true,
       raw_meta: {
-        builtwith: {
-          spend: candidate.spend,
-          sku: candidate.sku,
-          revenue: candidate.revenue,
-          lastDetectedAt: candidate.lastDetectedAt,
-        },
+        source,
+        ...(candidate.metadata ?? {}),
+        ...(source === 'builtwith'
+          ? {
+              builtwith: {
+                spend: candidate.spend,
+                sku: candidate.sku,
+                revenue: candidate.revenue,
+                lastDetectedAt: candidate.lastDetectedAt,
+              },
+            }
+          : {}),
       },
     }),
   });
