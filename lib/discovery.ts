@@ -148,7 +148,7 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
       });
     }
   } catch {
-    // Product JSON is optional; a verified storefront can still be reviewed without it.
+    // Product JSON is optional, but auto-approval requires at least one usable product.
   }
 
   let score = 55;
@@ -173,6 +173,8 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
 export async function persistCandidate(candidate: DiscoveryCandidate, verified: VerifiedStore) {
   const now = new Date().toISOString();
   const source = candidate.source || 'manual';
+  const autoApproved = verified.shopifyVerified && verified.products.length > 0;
+
   const storeRows = await supabaseRest<Array<{ id: string }>>('stores?on_conflict=domain', {
     method: 'POST',
     prefer: 'resolution=merge-duplicates,return=representation',
@@ -190,8 +192,10 @@ export async function persistCandidate(candidate: DiscoveryCandidate, verified: 
       last_seen_at: now,
       discovery_score: verified.score,
       shopify_verified: true,
+      status: autoApproved ? 'approved' : 'pending',
       raw_meta: {
         source,
+        autoApproved,
         ...(candidate.metadata ?? {}),
         ...(source === 'builtwith'
           ? {
@@ -229,5 +233,5 @@ export async function persistCandidate(candidate: DiscoveryCandidate, verified: 
     });
   }
 
-  return { storeId, productCount: verified.products.length };
+  return { storeId, productCount: verified.products.length, autoApproved };
 }
