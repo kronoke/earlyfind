@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRecentShopifyCandidates } from '../../../../lib/builtwith';
 import { persistCandidate, verifyShopifyStore } from '../../../../lib/discovery';
+import { freeStarterCandidates } from '../../../../lib/free-candidates';
 import { supabaseRest } from '../../../../lib/supabase-rest';
 
 export const maxDuration = 300;
@@ -14,9 +15,11 @@ function authorized(request: NextRequest) {
 async function runDiscovery() {
   const startedAt = new Date().toISOString();
   const hasBuiltWith = Boolean(process.env.BUILTWITH_API_KEY);
+  const limit = Number(process.env.DISCOVERY_LIMIT || 60);
   const candidates = hasBuiltWith
-    ? await getRecentShopifyCandidates(7, Number(process.env.DISCOVERY_LIMIT || 60))
-    : [];
+    ? await getRecentShopifyCandidates(7, limit)
+    : freeStarterCandidates.slice(0, Math.max(1, Math.min(limit, freeStarterCandidates.length)));
+  const source = hasBuiltWith ? 'builtwith' : 'shopify-community';
   const errors: Array<{ domain: string; error: string }> = [];
   let verifiedCount = 0;
   let productCount = 0;
@@ -24,7 +27,7 @@ async function runDiscovery() {
   const runRows = await supabaseRest<Array<{ id: string }>>('discovery_runs', {
     method: 'POST',
     prefer: 'return=representation',
-    body: JSON.stringify({ source: hasBuiltWith ? 'builtwith' : 'no-paid-provider', started_at: startedAt, candidates_found: candidates.length }),
+    body: JSON.stringify({ source, started_at: startedAt, candidates_found: candidates.length }),
   });
   const runId = runRows[0]?.id;
 
@@ -32,7 +35,10 @@ async function runDiscovery() {
     try {
       const verified = await verifyShopifyStore(candidate.domain);
       if (!verified) continue;
-      const result = await persistCandidate({ ...candidate, source: 'builtwith' }, verified);
+      const result = await persistCandidate(
+        { ...candidate, source: candidate.source || source },
+        verified
+      );
       verifiedCount += 1;
       productCount += result.productCount;
     } catch (error) {
@@ -54,12 +60,14 @@ async function runDiscovery() {
   }
 
   return {
-    provider: hasBuiltWith ? 'builtwith' : 'none',
+    provider: source,
     candidates: candidates.length,
     verified: verifiedCount,
     products: productCount,
     errors: errors.length,
-    message: hasBuiltWith ? undefined : 'No paid discovery provider configured; use /admin/discovery for free batch imports.',
+    message: hasBuiltWith
+      ? undefined
+      : 'Using the free curated Shopify Community starter feed. Add more candidates from /admin/discovery anytime.',
   };
 }
 
