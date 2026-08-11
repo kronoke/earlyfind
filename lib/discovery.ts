@@ -75,14 +75,15 @@ function extractMeta(html: string, base: string) {
 }
 
 function hasShopifyFingerprint(html: string) {
+  const lower = html.toLowerCase();
   return [
     'cdn.shopify.com',
-    'Shopify.theme',
+    'shopify.theme',
     'shopify-section',
     'myshopify.com',
     'shopify-payment-button',
-    'Shopify.routes',
-  ].some((fingerprint) => html.includes(fingerprint));
+    'shopify.routes',
+  ].some((fingerprint) => lower.includes(fingerprint));
 }
 
 async function fetchText(url: string, timeoutMs = 9000) {
@@ -118,40 +119,47 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   }
   if (!homepage.ok || !homepage.headers.get('content-type')?.includes('text/html')) return null;
 
+  const resolvedHomepage = homepage.url || homepageUrl;
   const html = (await homepage.text()).slice(0, 1_500_000);
-  if (!hasShopifyFingerprint(html)) return null;
-
-  const meta = extractMeta(html, homepage.url || homepageUrl);
+  const fingerprintVerified = hasShopifyFingerprint(html);
+  const meta = extractMeta(html, resolvedHomepage);
   let products: VerifiedStore['products'] = [];
+  let productFeedVerified = false;
 
   try {
-    const response = await fetch(`${homepage.url.replace(/\/$/, '')}/products.json?limit=12`, {
+    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=12`, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       redirect: 'follow',
       cache: 'no-store',
     });
-    if (response.ok && response.headers.get('content-type')?.includes('json')) {
+    if (response.ok) {
       const payload = (await response.json()) as ShopifyProductsResponse;
-      products = (payload.products ?? []).flatMap((product) => {
-        if (!product.title || !product.handle) return [];
-        const priceRaw = product.variants?.[0]?.price;
-        const price = priceRaw ? Number(priceRaw) : undefined;
-        return [{
-          external_id: product.id != null ? String(product.id) : undefined,
-          handle: product.handle,
-          title: product.title,
-          price: Number.isFinite(price) ? price : undefined,
-          image_url: product.image?.src ?? product.images?.[0]?.src,
-          product_url: `${homepage.url.replace(/\/$/, '')}/products/${product.handle}`,
-          raw: product,
-        }];
-      });
+      if (Array.isArray(payload.products)) {
+        productFeedVerified = true;
+        products = payload.products.flatMap((product) => {
+          if (!product.title || !product.handle) return [];
+          const priceRaw = product.variants?.[0]?.price;
+          const price = priceRaw ? Number(priceRaw) : undefined;
+          return [{
+            external_id: product.id != null ? String(product.id) : undefined,
+            handle: product.handle,
+            title: product.title,
+            price: Number.isFinite(price) ? price : undefined,
+            image_url: product.image?.src ?? product.images?.[0]?.src,
+            product_url: `${resolvedHomepage.replace(/\/$/, '')}/products/${product.handle}`,
+            raw: product,
+          }];
+        });
+      }
     }
   } catch {
-    // Product JSON is optional, but auto-approval requires at least one usable product.
+    // Some stores disable public products.json. Homepage fingerprints can still verify Shopify.
   }
 
+  if (!fingerprintVerified && !productFeedVerified) return null;
+
   let score = 55;
+  if (productFeedVerified) score += 10;
   if (products.length >= 3) score += 15;
   if (meta.description) score += 10;
   if (meta.logoUrl) score += 5;
@@ -161,7 +169,7 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   return {
     domain,
     name: meta.name,
-    homepageUrl: homepage.url || homepageUrl,
+    homepageUrl: resolvedHomepage,
     description: meta.description,
     logoUrl: meta.logoUrl,
     shopifyVerified: true,
