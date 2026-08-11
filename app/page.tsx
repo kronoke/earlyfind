@@ -1,4 +1,5 @@
 import Header from "@/components/Header";
+import { bootstrapRealStores } from "@/lib/bootstrap-real-stores";
 import { isSupabaseConfigured, supabaseRest } from "@/lib/supabase-rest";
 
 type StoreJoin = {
@@ -75,9 +76,20 @@ function RealProductCard({ product }: { product: ProductRow }) {
 }
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 export default async function HomePage() {
-  const products = await getApprovedProducts();
+  let products = await getApprovedProducts();
+
+  if (products.length === 0 && isSupabaseConfigured()) {
+    try {
+      await bootstrapRealStores(8);
+      products = await getApprovedProducts();
+    } catch (error) {
+      console.error("Initial EarlyFind store bootstrap failed", error);
+    }
+  }
+
   const topProducts = products.slice(0, 6);
   const moreProducts = products.slice(6);
   const today = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric" }).format(new Date());
@@ -101,12 +113,12 @@ export default async function HomePage() {
         </section>
 
         <section className="ticker" aria-label="site highlights">
-          <span>Real stores only</span><i>✦</i><span>Human approved</span><i>✦</i><span>No mega-brands</span><i>✦</i><span>Direct merchant links</span>
+          <span>Real stores only</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>No mega-brands</span><i>✦</i><span>Direct merchant links</span>
         </section>
 
         <section className="discover" id="discover">
           <div className="section-head" id="trending">
-            <div><span className="eyebrow">Today · {today}</span><h2>Newest approved finds</h2></div>
+            <div><span className="eyebrow">Today · {today}</span><h2>Newest verified finds</h2></div>
             <div className="rank-chip">Live catalog</div>
           </div>
 
@@ -117,9 +129,9 @@ export default async function HomePage() {
           ) : (
             <div style={{ border: "1px dashed #cfc8bd", borderRadius: 20, padding: "52px 24px", textAlign: "center", background: "#faf8f4" }}>
               <span className="eyebrow">Catalog warming up</span>
-              <h2 style={{ margin: "10px 0" }}>No approved products yet.</h2>
-              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind is connected to the real database now. Products will appear here only after a Shopify store has been verified and approved in the admin discovery queue.</p>
-              <a className="button" href="/admin/discovery">Open discovery queue</a>
+              <h2 style={{ margin: "10px 0" }}>No verified products imported yet.</h2>
+              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind attempted the free starter import. If this remains empty, open the admin discovery page to check the importer and add more candidate domains.</p>
+              <a className="button" href="/admin/discovery">Open discovery tools</a>
             </div>
           )}
         </section>
@@ -129,7 +141,7 @@ export default async function HomePage() {
             <div className="section-copy">
               <span className="eyebrow">Recently discovered</span>
               <h2>Small brands.<br />Real products.</h2>
-              <p>Every product here comes from a verified Shopify storefront that passed through the EarlyFind review queue.</p>
+              <p>Every product here comes from a Shopify storefront that EarlyFind verified before adding it to the catalog.</p>
               <a className="inline-link" href="#more">Browse more finds →</a>
             </div>
             <div className="mini-grid" id="more">{moreProducts.map((product) => <RealProductCard key={product.id} product={product} />)}</div>
@@ -139,8 +151,8 @@ export default async function HomePage() {
         <section className="how" id="how-it-works">
           <div className="section-head"><div><span className="eyebrow">The idea</span><h2>Discovery that compounds.</h2></div></div>
           <div className="steps">
-            <div><span>01</span><h3>We find what’s new</h3><p>EarlyFind verifies emerging Shopify stores and pulls their public products into a private review queue.</p></div>
-            <div><span>02</span><h3>We approve real stores</h3><p>Only reviewed stores reach the public catalog, keeping fake demos and obvious junk off the site.</p></div>
+            <div><span>01</span><h3>We find what’s new</h3><p>EarlyFind collects candidate emerging stores from free sources today and richer discovery feeds later.</p></div>
+            <div><span>02</span><h3>We verify the storefront</h3><p>The crawler checks for Shopify fingerprints and usable public products before a store can appear.</p></div>
             <div><span>03</span><h3>Shoppers discover them</h3><p>Visitors click directly through to the merchant, giving small brands another source of discovery and referral traffic.</p></div>
           </div>
         </section>
