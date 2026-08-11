@@ -1,5 +1,5 @@
 import Header from "@/components/Header";
-import { bootstrapRealStores } from "@/lib/bootstrap-real-stores";
+import StarterBootstrap from "@/components/StarterBootstrap";
 import { isSupabaseConfigured, supabaseRest } from "@/lib/supabase-rest";
 
 type StoreJoin = {
@@ -76,20 +76,9 @@ function RealProductCard({ product }: { product: ProductRow }) {
 }
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
 
 export default async function HomePage() {
-  let products = await getApprovedProducts();
-
-  if (products.length === 0 && isSupabaseConfigured()) {
-    try {
-      await bootstrapRealStores(8);
-      products = await getApprovedProducts();
-    } catch (error) {
-      console.error("Initial EarlyFind store bootstrap failed", error);
-    }
-  }
-
+  const products = await getApprovedProducts();
   const topProducts = products.slice(0, 6);
   const moreProducts = products.slice(6);
   const today = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric" }).format(new Date());
@@ -129,9 +118,10 @@ export default async function HomePage() {
           ) : (
             <div style={{ border: "1px dashed #cfc8bd", borderRadius: 20, padding: "52px 24px", textAlign: "center", background: "#faf8f4" }}>
               <span className="eyebrow">Catalog warming up</span>
-              <h2 style={{ margin: "10px 0" }}>No verified products imported yet.</h2>
-              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind attempted the free starter import. If this remains empty, open the admin discovery page to check the importer and add more candidate domains.</p>
-              <a className="button" href="/admin/discovery">Open discovery tools</a>
+              <h2 style={{ margin: "10px 0" }}>Finding the first real products.</h2>
+              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>The site stays online while EarlyFind checks a small curated starter batch in the background. Valid Shopify products will appear after import.</p>
+              <StarterBootstrap enabled={isSupabaseConfigured()} />
+              <a className="button" style={{ marginTop: 18 }} href="/admin/discovery">Open discovery tools</a>
             </div>
           )}
         </section>
