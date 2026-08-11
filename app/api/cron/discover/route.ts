@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRecentShopifyCandidates } from '../../../../lib/builtwith';
 import { persistCandidate, verifyShopifyStore } from '../../../../lib/discovery';
-import { freeStarterCandidates } from '../../../../lib/free-candidates';
+import { getShopifyCommunityCandidates } from '../../../../lib/shopify-community-source';
 import { supabaseRest } from '../../../../lib/supabase-rest';
 
 export const maxDuration = 300;
@@ -15,14 +15,11 @@ function authorized(request: NextRequest) {
 async function runDiscovery() {
   const startedAt = new Date().toISOString();
   const hasBuiltWith = Boolean(process.env.BUILTWITH_API_KEY);
-  const limit = Number(process.env.DISCOVERY_LIMIT || 60);
-  const source = hasBuiltWith ? 'builtwith' : 'shopify-community';
+  const limit = Number(process.env.DISCOVERY_LIMIT || 40);
+  const source = hasBuiltWith ? 'builtwith' : 'shopify-community-scrape';
   const candidates = hasBuiltWith
-    ? (await getRecentShopifyCandidates(7, limit)).map((candidate) => ({
-        ...candidate,
-        source,
-      }))
-    : freeStarterCandidates.slice(0, Math.max(1, Math.min(limit, freeStarterCandidates.length)));
+    ? (await getRecentShopifyCandidates(7, limit)).map((candidate) => ({ ...candidate, source }))
+    : await getShopifyCommunityCandidates(limit);
 
   const errors: Array<{ domain: string; error: string }> = [];
   let verifiedCount = 0;
@@ -38,7 +35,7 @@ async function runDiscovery() {
   for (const candidate of candidates) {
     try {
       const verified = await verifyShopifyStore(candidate.domain);
-      if (!verified) continue;
+      if (!verified || verified.products.length === 0) continue;
       const result = await persistCandidate(candidate, verified);
       verifiedCount += 1;
       productCount += result.productCount;
@@ -66,9 +63,6 @@ async function runDiscovery() {
     verified: verifiedCount,
     products: productCount,
     errors: errors.length,
-    message: hasBuiltWith
-      ? undefined
-      : 'Using the free curated Shopify Community starter feed. Add more candidates from /admin/discovery anytime.',
   };
 }
 
