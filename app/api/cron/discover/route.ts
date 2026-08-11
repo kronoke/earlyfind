@@ -16,10 +16,14 @@ async function runDiscovery() {
   const startedAt = new Date().toISOString();
   const hasBuiltWith = Boolean(process.env.BUILTWITH_API_KEY);
   const limit = Number(process.env.DISCOVERY_LIMIT || 60);
-  const candidates = hasBuiltWith
-    ? await getRecentShopifyCandidates(7, limit)
-    : freeStarterCandidates.slice(0, Math.max(1, Math.min(limit, freeStarterCandidates.length)));
   const source = hasBuiltWith ? 'builtwith' : 'shopify-community';
+  const candidates = hasBuiltWith
+    ? (await getRecentShopifyCandidates(7, limit)).map((candidate) => ({
+        ...candidate,
+        source,
+      }))
+    : freeStarterCandidates.slice(0, Math.max(1, Math.min(limit, freeStarterCandidates.length)));
+
   const errors: Array<{ domain: string; error: string }> = [];
   let verifiedCount = 0;
   let productCount = 0;
@@ -35,10 +39,7 @@ async function runDiscovery() {
     try {
       const verified = await verifyShopifyStore(candidate.domain);
       if (!verified) continue;
-      const result = await persistCandidate(
-        { ...candidate, source: candidate.source || source },
-        verified
-      );
+      const result = await persistCandidate(candidate, verified);
       verifiedCount += 1;
       productCount += result.productCount;
     } catch (error) {
