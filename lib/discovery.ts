@@ -63,6 +63,30 @@ function absoluteUrl(value: string | undefined, base: string) {
   }
 }
 
+function canonicalImage(value?: string) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    let path = decodeURIComponent(url.pathname).toLowerCase();
+    path = path.replace(/_(?:pico|icon|thumb|small|compact|medium|large|grande|original|master|\d+x\d*|x\d+)(?=\.[a-z0-9]+$)/i, '');
+    return `${url.hostname.replace(/^www\./, '').toLowerCase()}${path}`;
+  } catch {
+    return value.split('?')[0].toLowerCase();
+  }
+}
+
+function familyTitle(value: string) {
+  return value
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[–—]/g, '-')
+    .replace(/\b(?:gr\.?|größe|groesse|size|taille)\s*[:.\-]?\s*(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{1,3})\b/gi, ' ')
+    .replace(/\b(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\b\s*$/gi, ' ')
+    .replace(/\b(?:small|medium|large|extra small|extra large)\b\s*$/gi, ' ')
+    .replace(/[\s|,_-]+/g, ' ')
+    .trim();
+}
+
 function extractMeta(html: string, base: string) {
   const title = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
   const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];
@@ -139,7 +163,7 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 9000);
-    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=24`, {
+    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=48`, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       redirect: 'follow',
       cache: 'no-store',
@@ -151,9 +175,20 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
       if (Array.isArray(payload.products)) {
         productFeedVerified = true;
         const seenHandles = new Set<string>();
+        const seenImages = new Set<string>();
+        const seenFamilies = new Set<string>();
+
         products = payload.products.flatMap((product) => {
           if (!product.title || !product.handle || seenHandles.has(product.handle)) return [];
+          const imageUrl = product.image?.src ?? product.images?.[0]?.src;
+          const imageKey = canonicalImage(imageUrl);
+          const familyKey = familyTitle(product.title);
+          if ((imageKey && seenImages.has(imageKey)) || (familyKey && seenFamilies.has(familyKey))) return [];
+
           seenHandles.add(product.handle);
+          if (imageKey) seenImages.add(imageKey);
+          if (familyKey) seenFamilies.add(familyKey);
+
           const priceRaw = product.variants?.[0]?.price;
           const price = priceRaw ? Number(priceRaw) : undefined;
           return [{
@@ -161,7 +196,7 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
             handle: product.handle,
             title: product.title,
             price: Number.isFinite(price) ? price : undefined,
-            image_url: product.image?.src ?? product.images?.[0]?.src,
+            image_url: imageUrl,
             product_url: `${resolvedHomepage.replace(/\/$/, '')}/products/${product.handle}`,
             raw: product,
           }];
