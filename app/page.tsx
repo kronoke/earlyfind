@@ -8,6 +8,7 @@ type StoreJoin = {
   domain: string;
   homepage_url: string | null;
   description: string | null;
+  country: string | null;
   status: string;
 };
 
@@ -16,6 +17,12 @@ type ProductRaw = {
   tags?: string | string[];
   vendor?: string;
   handle?: string;
+  earlyfind?: {
+    detected_language?: string | null;
+    country_code?: string | null;
+    translated_title?: string | null;
+    translated_description?: string | null;
+  };
 };
 
 type ProductRow = {
@@ -42,6 +49,45 @@ const CATEGORY_KEYWORDS: Record<Exclude<CategoryName, "Other">, string[]> = {
   Gifts: ["gift", "personalized", "custom", "keepsake", "birthday", "wedding", "anniversary", "baby", "pet", "novelty", "card"],
   Art: ["art", "print", "poster", "painting", "canvas", "illustration", "photography", "sculpture", "ceramic", "craft", "handmade", "book", "journal"],
   Food: ["food", "snack", "coffee", "tea", "chocolate", "candy", "sauce", "spice", "honey", "cookie", "bakery", "drink", "beverage"],
+};
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  de: "German",
+  fr: "French",
+  es: "Spanish",
+  it: "Italian",
+  nl: "Dutch",
+  pt: "Portuguese",
+  sv: "Swedish",
+  da: "Danish",
+  no: "Norwegian",
+  fi: "Finnish",
+  pl: "Polish",
+  cs: "Czech",
+  ja: "Japanese",
+  ko: "Korean",
+  zh: "Chinese",
+};
+
+const COUNTRY_NAMES: Record<string, string> = {
+  US: "United States",
+  CA: "Canada",
+  DE: "Germany",
+  FR: "France",
+  GB: "United Kingdom",
+  UK: "United Kingdom",
+  NL: "Netherlands",
+  ES: "Spain",
+  IT: "Italy",
+  AU: "Australia",
+  NZ: "New Zealand",
+  JP: "Japan",
+  KR: "South Korea",
+  SE: "Sweden",
+  DK: "Denmark",
+  NO: "Norway",
+  FI: "Finland",
+  PL: "Poland",
 };
 
 function joinedStore(value: ProductRow["stores"]): StoreJoin | undefined {
@@ -142,12 +188,33 @@ function dedupeProducts(products: ProductRow[]) {
   return result;
 }
 
+function countryFlag(code?: string | null) {
+  if (!code) return "";
+  const normalized = code.toUpperCase() === "UK" ? "GB" : code.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(normalized)) return "";
+  return String.fromCodePoint(...[...normalized].map((char) => 127397 + char.charCodeAt(0)));
+}
+
+function countryLabel(product: ProductRow) {
+  const store = joinedStore(product.stores);
+  const code = (store?.country || product.raw?.earlyfind?.country_code || "").toUpperCase();
+  if (!code) return null;
+  const normalized = code === "UK" ? "GB" : code;
+  return `${countryFlag(normalized)} ${COUNTRY_NAMES[normalized] || normalized}`;
+}
+
+function languageLabel(product: ProductRow) {
+  const language = product.raw?.earlyfind?.detected_language?.toLowerCase();
+  if (!language || language === "en") return null;
+  return LANGUAGE_NAMES[language] || language.toUpperCase();
+}
+
 async function getApprovedProducts() {
   if (!isSupabaseConfigured()) return [] as ProductRow[];
 
   try {
     const rows = await supabaseRest<ProductRow[]>(
-      "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=180"
+      "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,country,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=180"
     );
     return dedupeProducts(rows);
   } catch (error) {
@@ -160,31 +227,39 @@ function RealProductCard({ product }: { product: ProductRow }) {
   const store = joinedStore(product.stores);
   const storeName = store?.name || store?.domain || "Independent store";
   const category = productCategory(product);
-  const description = store?.description?.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+  const country = countryLabel(product);
+  const language = languageLabel(product);
+  const displayTitle = product.raw?.earlyfind?.translated_title || product.title;
+  const description = product.raw?.earlyfind?.translated_description || store?.description?.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
   const shortDescription = description && description.length > 180 ? `${description.slice(0, 177)}...` : description;
 
   return (
     <article className="product-card">
       <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-image-wrap">
         {product.image_url ? (
-          <img className="product-image" src={product.image_url} alt={product.title} />
+          <img className="product-image" src={product.image_url} alt={displayTitle} />
         ) : (
           <div className="product-image" style={{ display: "grid", placeItems: "center", minHeight: 260, background: "#f2efe9", padding: 24, textAlign: "center" }}>
-            <strong>{product.title}</strong>
+            <strong>{displayTitle}</strong>
           </div>
         )}
         <span className="product-badge">{category}</span>
       </a>
       <div className="product-body">
         <div className="product-meta">
-          <span>{category}</span>
+          <span>{country || category}</span>
           <span>{product.price != null ? `$${Number(product.price).toFixed(2)}` : "Visit store"}</span>
         </div>
-        <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-title">{product.title}</a>
+        <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-title">{displayTitle}</a>
         {store?.homepage_url ? (
           <a href={store.homepage_url} target="_blank" rel="noreferrer" className="product-brand">by {storeName}</a>
         ) : (
           <span className="product-brand">by {storeName}</span>
+        )}
+        {language && (
+          <p style={{ margin: "8px 0 0", fontSize: 12, fontWeight: 700, opacity: 0.62 }}>
+            {product.raw?.earlyfind?.translated_title ? `Translated from ${language}` : `Original language: ${language}`}
+          </p>
         )}
         <p>{shortDescription || `Discovered from ${store?.domain || "an independent Shopify store"}.`}</p>
         <div className="product-footer">
@@ -228,7 +303,7 @@ export default async function HomePage() {
         </section>
 
         <section className="ticker" aria-label="site highlights">
-          <span>Independent stores</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>Real products</span><i>✦</i><span>Direct merchant links</span>
+          <span>Independent stores</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>Global brands</span><i>✦</i><span>Direct merchant links</span>
         </section>
 
         {activeCategories.length > 0 && (
