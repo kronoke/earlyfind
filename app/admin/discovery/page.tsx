@@ -15,6 +15,28 @@ type StoreRow = {
 
 export const dynamic = 'force-dynamic';
 
+function friendlyReason(value: string) {
+  const labels: Record<string, string> = {
+    not_shopify: 'Not Shopify',
+    no_products: 'No products',
+    no_usable_products: 'No usable products',
+    shopify_no_usable_products: 'Shopify, no usable products',
+    password_protected: 'Password protected',
+    product_feed_blocked: 'Product feed blocked',
+    product_feed_timeout: 'Product feed timed out',
+    product_feed_unreachable: 'Product feed unreachable',
+    homepage_timeout: 'Homepage timed out',
+    homepage_unreachable: 'Homepage unreachable',
+    homepage_not_html: 'Homepage not HTML',
+    invalid_product_feed: 'Invalid product feed',
+    verification_mismatch: 'Verification mismatch',
+  };
+  if (labels[value]) return labels[value];
+  if (value.startsWith('homepage_http_')) return `Homepage HTTP ${value.replace('homepage_http_', '')}`;
+  if (value.startsWith('error_')) return value.replace('error_', 'Error: ');
+  return value.replaceAll('_', ' ');
+}
+
 export default async function DiscoveryAdminPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
   if (!isSupabaseConfigured()) {
     return (
@@ -31,6 +53,14 @@ export default async function DiscoveryAdminPage({ searchParams }: { searchParam
   const verified = typeof params.verified === 'string' ? params.verified : null;
   const products = typeof params.products === 'string' ? params.products : null;
   const errors = typeof params.errors === 'string' ? params.errors : null;
+  const filtered = typeof params.filtered === 'string' ? params.filtered : null;
+  const reasonsRaw = typeof params.reasons === 'string' ? params.reasons : '';
+  const reasons = reasonsRaw
+    ? reasonsRaw.split(',').map((entry) => {
+        const splitAt = entry.lastIndexOf(':');
+        return splitAt > 0 ? { reason: entry.slice(0, splitAt), count: entry.slice(splitAt + 1) } : null;
+      }).filter(Boolean) as Array<{ reason: string; count: string }>
+    : [];
 
   const stores = await supabaseRest<StoreRow[]>(
     'stores?select=id,domain,name,description,homepage_url,logo_url,discovery_score,source_first_detected_at,first_seen_at,status&status=eq.pending&order=discovery_score.desc,first_seen_at.desc&limit=100'
@@ -50,7 +80,7 @@ export default async function DiscoveryAdminPage({ searchParams }: { searchParam
       <section style={{ border: '1px solid #ddd', borderRadius: 16, padding: 20, marginBottom: 24 }}>
         <h2 style={{ marginTop: 0 }}>Automatic free discovery</h2>
         <p style={{ opacity: 0.72, marginTop: 0 }}>
-          Scrape recent public Shopify Store Feedback posts, extract merchant domains, verify each storefront, and auto-import stores that expose usable products.
+          Scrape recent public Shopify Store Feedback posts, filter obvious non-store domains, follow storefront redirects, verify Shopify, and auto-import stores that expose usable products.
         </p>
         <form action="/api/admin/scrape-community" method="post">
           <button type="submit" style={{ padding: '11px 16px', borderRadius: 10, border: 0, cursor: 'pointer', fontWeight: 700 }}>
@@ -58,9 +88,20 @@ export default async function DiscoveryAdminPage({ searchParams }: { searchParam
           </button>
         </form>
         {scraped && (
-          <p style={{ marginBottom: 0, fontWeight: 600 }}>
-            Last scrape: found {scraped} candidate domains · verified {verified || '0'} stores · imported {products || '0'} products · {errors || '0'} errors
-          </p>
+          <div style={{ marginTop: 16 }}>
+            <p style={{ margin: 0, fontWeight: 700 }}>
+              Last scrape: found {scraped} candidates · verified {verified || '0'} stores · imported {products || '0'} products · filtered {filtered || '0'} · {errors || '0'} errors
+            </p>
+            {reasons.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {reasons.map(({ reason, count }) => (
+                  <span key={reason} style={{ fontSize: 13, padding: '6px 9px', borderRadius: 999, background: '#eee' }}>
+                    {friendlyReason(reason)}: {count}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </section>
 
