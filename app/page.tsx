@@ -41,7 +41,7 @@ type CategoryName = "Clothing" | "Home" | "Beauty" | "Jewelry" | "Tech" | "Gifts
 const CATEGORY_ORDER: CategoryName[] = ["Clothing", "Home", "Beauty", "Jewelry", "Tech", "Gifts", "Art", "Food", "Other"];
 
 const CATEGORY_KEYWORDS: Record<Exclude<CategoryName, "Other">, string[]> = {
-  Clothing: ["shirt", "tee", "hoodie", "sweater", "dress", "jacket", "coat", "pants", "jeans", "shorts", "skirt", "apparel", "clothing", "fashion", "sock", "hat", "cap", "beanie", "shoe", "sneaker", "boot", "bag", "tote", "glove", "protective", "beekeeper", "jacke", "handschuh", "imker", "kleidung", "schuh", "tasche"],
+  Clothing: ["shirt", "tee", "hoodie", "sweater", "dress", "jacket", "coat", "pants", "jeans", "shorts", "skirt", "apparel", "clothing", "fashion", "sock", "hat", "cap", "beanie", "shoe", "sneaker", "boot", "bag", "tote", "glove", "protective", "beekeeper"],
   Home: ["home", "decor", "candle", "lamp", "rug", "pillow", "blanket", "furniture", "kitchen", "mug", "cup", "glass", "vase", "bedding", "bath", "towel", "planter", "storage"],
   Beauty: ["beauty", "skin", "skincare", "serum", "cream", "lotion", "soap", "shampoo", "conditioner", "hair", "makeup", "lip", "cosmetic", "fragrance", "perfume", "body", "nail"],
   Jewelry: ["jewelry", "jewellery", "necklace", "bracelet", "earring", "ring", "pendant", "chain", "gem", "silver", "gold"],
@@ -51,43 +51,10 @@ const CATEGORY_KEYWORDS: Record<Exclude<CategoryName, "Other">, string[]> = {
   Food: ["food", "snack", "coffee", "tea", "chocolate", "candy", "sauce", "spice", "honey", "cookie", "bakery", "drink", "beverage"],
 };
 
-const LANGUAGE_NAMES: Record<string, string> = {
-  de: "German",
-  fr: "French",
-  es: "Spanish",
-  it: "Italian",
-  nl: "Dutch",
-  pt: "Portuguese",
-  sv: "Swedish",
-  da: "Danish",
-  no: "Norwegian",
-  fi: "Finnish",
-  pl: "Polish",
-  cs: "Czech",
-  ja: "Japanese",
-  ko: "Korean",
-  zh: "Chinese",
-};
-
 const COUNTRY_NAMES: Record<string, string> = {
-  US: "United States",
-  CA: "Canada",
-  DE: "Germany",
-  FR: "France",
-  GB: "United Kingdom",
-  UK: "United Kingdom",
-  NL: "Netherlands",
-  ES: "Spain",
-  IT: "Italy",
-  AU: "Australia",
-  NZ: "New Zealand",
-  JP: "Japan",
-  KR: "South Korea",
-  SE: "Sweden",
-  DK: "Denmark",
-  NO: "Norway",
-  FI: "Finland",
-  PL: "Poland",
+  US: "United States", CA: "Canada", GB: "United Kingdom", UK: "United Kingdom",
+  AU: "Australia", NZ: "New Zealand", IE: "Ireland", DE: "Germany", FR: "France",
+  NL: "Netherlands", ES: "Spain", IT: "Italy", JP: "Japan", KR: "South Korea",
 };
 
 function joinedStore(value: ProductRow["stores"]): StoreJoin | undefined {
@@ -107,16 +74,12 @@ function productCategory(product: ProductRow): CategoryName {
   const store = joinedStore(product.stores);
   const primary = [product.title, product.raw?.product_type, product.raw?.tags, product.raw?.vendor].map(normalizeText).join(" ");
   const secondary = [store?.name, store?.description].map(normalizeText).join(" ");
-
   let best: CategoryName = "Other";
   let bestScore = 0;
   for (const category of CATEGORY_ORDER) {
     if (category === "Other") continue;
     const score = keywordScore(primary, CATEGORY_KEYWORDS[category], 3) + keywordScore(secondary, CATEGORY_KEYWORDS[category], 1);
-    if (score > bestScore) {
-      best = category;
-      bestScore = score;
-    }
+    if (score > bestScore) { best = category; bestScore = score; }
   }
   return best;
 }
@@ -125,8 +88,7 @@ function canonicalProductKey(product: ProductRow) {
   const store = joinedStore(product.stores);
   try {
     const url = new URL(product.product_url);
-    const path = url.pathname.replace(/\/$/, "").toLowerCase();
-    return `${url.hostname.replace(/^www\./, "").toLowerCase()}${path}`;
+    return `${url.hostname.replace(/^www\./, "").toLowerCase()}${url.pathname.replace(/\/$/, "").toLowerCase()}`;
   } catch {
     return `${store?.domain || "unknown"}:${product.title.trim().toLowerCase()}`;
   }
@@ -145,15 +107,27 @@ function canonicalImageKey(product: ProductRow) {
 }
 
 function productFamilyTitle(title: string) {
-  return title
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[–—]/g, "-")
+  return title.toLowerCase().normalize("NFKD").replace(/[–—]/g, "-")
     .replace(/\b(?:gr\.?|größe|groesse|size|taille)\s*[:.\-]?\s*(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{1,3})\b/gi, " ")
     .replace(/\b(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\b\s*$/gi, " ")
     .replace(/\b(?:small|medium|large|extra small|extra large)\b\s*$/gi, " ")
-    .replace(/[\s|,_-]+/g, " ")
-    .trim();
+    .replace(/[\s|,_-]+/g, " ").trim();
+}
+
+function isEnglishProduct(product: ProductRow) {
+  const detected = product.raw?.earlyfind?.detected_language?.toLowerCase();
+  if (detected) return detected === "en";
+
+  const store = joinedStore(product.stores);
+  const sample = `${product.title} ${store?.description || ""}`.toLowerCase();
+  const obviousNonEnglish = [
+    /\b(?:größe|groesse|für|mit|und|oder|abnehmbar|schleier|imker|jacke|handschuh)\b/i,
+    /\b(?:pour|avec|taille|homme|femme|nouveau|nouvelle|bijoux|maison)\b/i,
+    /\b(?:para|con|talla|hombre|mujer|nuevo|nueva|hogar|joyas)\b/i,
+    /\b(?:per|con|taglia|uomo|donna|nuovo|nuova|casa|gioielli)\b/i,
+    /[ぁ-んァ-ン一-龯가-힣]/,
+  ];
+  return !obviousNonEnglish.some((pattern) => pattern.test(sample));
 }
 
 function dedupeProducts(products: ProductRow[]) {
@@ -164,6 +138,7 @@ function dedupeProducts(products: ProductRow[]) {
   const result: ProductRow[] = [];
 
   for (const product of products) {
+    if (!isEnglishProduct(product)) continue;
     const store = joinedStore(product.stores);
     const storeKey = store?.domain?.replace(/^www\./, "").toLowerCase() || "unknown";
     const urlKey = canonicalProductKey(product);
@@ -171,14 +146,7 @@ function dedupeProducts(products: ProductRow[]) {
     const familyKey = `${storeKey}:${productFamilyTitle(product.title)}`;
     const image = canonicalImageKey(product);
     const imageKey = image ? `${storeKey}:${image}` : null;
-
-    if (
-      seenUrls.has(urlKey) ||
-      seenStoreTitles.has(titleKey) ||
-      seenFamilies.has(familyKey) ||
-      (imageKey && seenStoreImages.has(imageKey))
-    ) continue;
-
+    if (seenUrls.has(urlKey) || seenStoreTitles.has(titleKey) || seenFamilies.has(familyKey) || (imageKey && seenStoreImages.has(imageKey))) continue;
     seenUrls.add(urlKey);
     seenStoreTitles.add(titleKey);
     seenFamilies.add(familyKey);
@@ -203,15 +171,8 @@ function countryLabel(product: ProductRow) {
   return `${countryFlag(normalized)} ${COUNTRY_NAMES[normalized] || normalized}`;
 }
 
-function languageLabel(product: ProductRow) {
-  const language = product.raw?.earlyfind?.detected_language?.toLowerCase();
-  if (!language || language === "en") return null;
-  return LANGUAGE_NAMES[language] || language.toUpperCase();
-}
-
 async function getApprovedProducts() {
   if (!isSupabaseConfigured()) return [] as ProductRow[];
-
   try {
     const rows = await supabaseRest<ProductRow[]>(
       "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,country,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=180"
@@ -228,20 +189,16 @@ function RealProductCard({ product }: { product: ProductRow }) {
   const storeName = store?.name || store?.domain || "Independent store";
   const category = productCategory(product);
   const country = countryLabel(product);
-  const language = languageLabel(product);
-  const displayTitle = product.raw?.earlyfind?.translated_title || product.title;
-  const description = product.raw?.earlyfind?.translated_description || store?.description?.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+  const description = store?.description?.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
   const shortDescription = description && description.length > 180 ? `${description.slice(0, 177)}...` : description;
 
   return (
     <article className="product-card">
       <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-image-wrap">
         {product.image_url ? (
-          <img className="product-image" src={product.image_url} alt={displayTitle} />
+          <img className="product-image" src={product.image_url} alt={product.title} />
         ) : (
-          <div className="product-image" style={{ display: "grid", placeItems: "center", minHeight: 260, background: "#f2efe9", padding: 24, textAlign: "center" }}>
-            <strong>{displayTitle}</strong>
-          </div>
+          <div className="product-image" style={{ display: "grid", placeItems: "center", minHeight: 260, background: "#f2efe9", padding: 24, textAlign: "center" }}><strong>{product.title}</strong></div>
         )}
         <span className="product-badge">{category}</span>
       </a>
@@ -250,17 +207,8 @@ function RealProductCard({ product }: { product: ProductRow }) {
           <span>{country || category}</span>
           <span>{product.price != null ? `$${Number(product.price).toFixed(2)}` : "Visit store"}</span>
         </div>
-        <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-title">{displayTitle}</a>
-        {store?.homepage_url ? (
-          <a href={store.homepage_url} target="_blank" rel="noreferrer" className="product-brand">by {storeName}</a>
-        ) : (
-          <span className="product-brand">by {storeName}</span>
-        )}
-        {language && (
-          <p style={{ margin: "8px 0 0", fontSize: 12, fontWeight: 700, opacity: 0.62 }}>
-            {product.raw?.earlyfind?.translated_title ? `Translated from ${language}` : `Original language: ${language}`}
-          </p>
-        )}
+        <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-title">{product.title}</a>
+        {store?.homepage_url ? <a href={store.homepage_url} target="_blank" rel="noreferrer" className="product-brand">by {storeName}</a> : <span className="product-brand">by {storeName}</span>}
         <p>{shortDescription || `Discovered from ${store?.domain || "an independent Shopify store"}.`}</p>
         <div className="product-footer">
           <span style={{ fontSize: 13, opacity: 0.65 }}>Added {new Date(product.first_seen_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
@@ -290,52 +238,37 @@ export default async function HomePage() {
         <Header />
 
         <section className="hero">
-          <div className="hero-kicker"><span className="live-dot" /> Real independent stores, updated daily</div>
+          <div className="hero-kicker"><span className="live-dot" /> English-language independent stores, updated daily</div>
           <h1>Shop small.<br />Find something different.</h1>
-          <p>Browse real products from emerging online stores in one place — like a marketplace for brands you haven’t discovered yet.</p>
+          <p>Browse real products from emerging English-language online stores in one place.</p>
           <div className="hero-actions">
             <a href="#discover" className="button">Browse new finds</a>
             <a href="#categories" className="text-button">Shop categories <span>↓</span></a>
           </div>
-          <div className="social-proof">
-            <span><strong>{products.length}</strong> unique product families live right now</span>
-          </div>
+          <div className="social-proof"><span><strong>{products.length}</strong> unique product families live right now</span></div>
         </section>
 
         <section className="ticker" aria-label="site highlights">
-          <span>Independent stores</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>Global brands</span><i>✦</i><span>Direct merchant links</span>
+          <span>Independent stores</span><i>✦</i><span>English listings only</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>Direct merchant links</span>
         </section>
 
         {activeCategories.length > 0 && (
           <section className="discover" id="categories" style={{ paddingBottom: 20 }}>
-            <div className="section-head">
-              <div><span className="eyebrow">Browse</span><h2>Shop by category</h2></div>
-            </div>
+            <div className="section-head"><div><span className="eyebrow">Browse</span><h2>Shop by category</h2></div></div>
             <div className="category-row">
-              {activeCategories.map((category) => (
-                <a key={category} href={`#category-${category.toLowerCase()}`} className="button" style={{ textDecoration: "none" }}>
-                  {category} · {categorized.get(category)?.length || 0}
-                </a>
-              ))}
+              {activeCategories.map((category) => <a key={category} href={`#category-${category.toLowerCase()}`} className="button" style={{ textDecoration: "none" }}>{category} · {categorized.get(category)?.length || 0}</a>)}
             </div>
           </section>
         )}
 
         <section className="discover" id="discover">
-          <div className="section-head" id="trending">
-            <div><span className="eyebrow">Today · {today}</span><h2>Newest finds</h2></div>
-            <div className="rank-chip">Unique products</div>
-          </div>
-
+          <div className="section-head" id="trending"><div><span className="eyebrow">Today · {today}</span><h2>Newest finds</h2></div><div className="rank-chip">Unique products</div></div>
           {newest.length > 0 ? (
-            <div className="product-grid">
-              {newest.map((product) => <RealProductCard key={product.id} product={product} />)}
-            </div>
+            <div className="product-grid">{newest.map((product) => <RealProductCard key={product.id} product={product} />)}</div>
           ) : (
             <div style={{ border: "1px dashed #cfc8bd", borderRadius: 20, padding: "52px 24px", textAlign: "center", background: "#faf8f4" }}>
-              <span className="eyebrow">Catalog warming up</span>
-              <h2 style={{ margin: "10px 0" }}>Finding the first real products.</h2>
-              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind is checking independent Shopify stores in the background. Valid products appear automatically after import.</p>
+              <span className="eyebrow">Catalog warming up</span><h2 style={{ margin: "10px 0" }}>Finding English-language products.</h2>
+              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind is checking independent Shopify stores in the background. English listings appear automatically after verification.</p>
               <StarterBootstrap enabled={isSupabaseConfigured()} />
               <a className="button" style={{ marginTop: 18 }} href="/admin/discovery">Open discovery tools</a>
             </div>
@@ -347,13 +280,8 @@ export default async function HomePage() {
           if (categoryProducts.length === 0) return null;
           return (
             <section className="discover" id={`category-${category.toLowerCase()}`} key={category} style={{ paddingTop: 30 }}>
-              <div className="section-head">
-                <div><span className="eyebrow">Shop small</span><h2>{category}</h2></div>
-                <div className="rank-chip">{categoryProducts.length} finds</div>
-              </div>
-              <div className="product-grid">
-                {categoryProducts.slice(0, 12).map((product) => <RealProductCard key={`${category}-${product.id}`} product={product} />)}
-              </div>
+              <div className="section-head"><div><span className="eyebrow">Shop small</span><h2>{category}</h2></div><div className="rank-chip">{categoryProducts.length} finds</div></div>
+              <div className="product-grid">{categoryProducts.slice(0, 12).map((product) => <RealProductCard key={`${category}-${product.id}`} product={product} />)}</div>
             </section>
           );
         })}
@@ -362,23 +290,14 @@ export default async function HomePage() {
           <div className="section-head"><div><span className="eyebrow">The idea</span><h2>A marketplace for small brands.</h2></div></div>
           <div className="steps">
             <div><span>01</span><h3>We discover stores</h3><p>EarlyFind finds emerging independent shops and verifies the storefront before importing products.</p></div>
-            <div><span>02</span><h3>We organize the catalog</h3><p>Size and color variants are collapsed into product families and sorted into useful shopping categories.</p></div>
+            <div><span>02</span><h3>We filter the catalog</h3><p>Non-English listings are hidden, duplicate variants are collapsed, and products are organized into shopping categories.</p></div>
             <div><span>03</span><h3>You shop the merchant</h3><p>Choose something you like and EarlyFind sends you directly to the small business to purchase it.</p></div>
           </div>
         </section>
 
-        <section className="brand-cta">
-          <span className="eyebrow light">For independent brands</span>
-          <h2>Launching something worth finding?</h2>
-          <p>Get your products in front of people actively looking for independent brands. Early listings are free.</p>
-          <a href="/claim" className="button light-button">Submit your store</a>
-        </section>
+        <section className="brand-cta"><span className="eyebrow light">For independent brands</span><h2>Launching something worth finding?</h2><p>Get your products in front of people actively looking for independent brands. Early listings are free.</p><a href="/claim" className="button light-button">Submit your store</a></section>
 
-        <footer>
-          <div className="brand footer-brand"><span className="brand-mark">E</span><span>EarlyFind</span></div>
-          <p>Discover early. Support independent.</p>
-          <span>© 2026 EarlyFind</span>
-        </footer>
+        <footer><div className="brand footer-brand"><span className="brand-mark">E</span><span>EarlyFind</span></div><p>Discover early. Support independent.</p><span>© 2026 EarlyFind</span></footer>
       </div>
     </main>
   );
