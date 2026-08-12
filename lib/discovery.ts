@@ -3,23 +3,274 @@ import { supabaseRest } from './supabase-rest';
 const USER_AGENT = 'EarlyFindBot/0.1 (+https://earlyfinds.site; discovery crawler)';
 
 type ShopifyProduct = {
-  id?: number | string; title?: string; handle?: string; product_type?: string;
-  tags?: string | string[]; vendor?: string; variants?: Array<{ price?: string }>;
-  images?: Array<{ src?: string }>; image?: { src?: string };
+  id?: number | string;
+  title?: string;
+  handle?: string;
+  product_type?: string;
+  tags?: string | string[];
+  vendor?: string;
+  variants?: Array<{ price?: string }>;
+  images?: Array<{ src?: string }>;
+  image?: { src?: string };
 };
+
 type ShopifyProductsResponse = { products?: ShopifyProduct[] };
-export type DiscoveryCandidate = { domain:string; source?:string; country?:string; firstDetectedAt?:string; lastDetectedAt?:string; metadata?:Record<string,unknown>; spend?:number; sku?:number; revenue?:number };
-export type VerifiedStore = { domain:string; name:string; homepageUrl:string; description?:string; logoUrl?:string; shopifyVerified:boolean; language?:string; country?:string; products:Array<{external_id?:string;handle?:string;title:string;price?:number;image_url?:string;product_url:string;raw:ShopifyProduct}>; score:number };
 
-function normalizeDomain(input:string){const raw=input.trim().toLowerCase();const value=raw.startsWith('http://')||raw.startsWith('https://')?raw:`https://${raw}`;return new URL(value).hostname.replace(/^www\./,'')}
-function absoluteUrl(value:string|undefined,base:string){if(!value)return undefined;try{return new URL(value,base).toString()}catch{return undefined}}
-function canonicalImage(value?:string){if(!value)return null;try{const u=new URL(value);let p=decodeURIComponent(u.pathname).toLowerCase();p=p.replace(/_(?:pico|icon|thumb|small|compact|medium|large|grande|original|master|\d+x\d*|x\d+)(?=\.[a-z0-9]+$)/i,'');return `${u.hostname.replace(/^www\./,'').toLowerCase()}${p}`}catch{return value.split('?')[0].toLowerCase()}}
-function familyTitle(value:string){return value.toLowerCase().normalize('NFKD').replace(/[–—]/g,'-').replace(/\b(?:gr\.?|größe|groesse|size|taille)\s*[:.\-]?\s*(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{1,3})\b/gi,' ').replace(/\b(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\b\s*$/gi,' ').replace(/\b(?:small|medium|large|extra small|extra large)\b\s*$/gi,' ').replace(/[\s|,_-]+/g,' ').trim()}
-function extractMeta(html:string,base:string){const title=html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();const ogTitle=html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];const description=html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1]??html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1];const image=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1];return{name:(ogTitle||title||new URL(base).hostname).replace(/\s*[|–—-]\s*.*$/,'').trim(),description:description?.trim(),logoUrl:absoluteUrl(image,base)}}
-function hasShopifyFingerprint(html:string){const l=html.toLowerCase();return['cdn.shopify.com','shopify.theme','shopify-section','myshopify.com','shopify-payment-button','shopify.routes'].some(x=>l.includes(x))}
-function localeSignals(html:string){const lang=(html.match(/<html[^>]+lang=["']([^"']+)["']/i)?.[1]||html.match(/property=["']og:locale["'][^>]+content=["']([^"']+)/i)?.[1]||'').replace('_','-').toLowerCase();const country=(html.match(/(?:countryCode|country_code|country)\s*["']?\s*[:=]\s*["']([A-Z]{2})["']/)?.[1]||'').toUpperCase();return{language:lang.split('-')[0]||undefined,country:country||undefined}}
-async function fetchText(url:string,timeoutMs=9000){const c=new AbortController();const t=setTimeout(()=>c.abort(),timeoutMs);try{return await fetch(url,{headers:{'User-Agent':USER_AGENT,Accept:'text/html,application/xhtml+xml'},redirect:'follow',cache:'no-store',signal:c.signal})}finally{clearTimeout(t)}}
+export type DiscoveryCandidate = {
+  domain: string;
+  source?: string;
+  country?: string;
+  firstDetectedAt?: string;
+  lastDetectedAt?: string;
+  metadata?: Record<string, unknown>;
+  spend?: number;
+  sku?: number;
+  revenue?: number;
+};
 
-export async function verifyShopifyStore(input:string):Promise<VerifiedStore|null>{let domain:string;try{domain=normalizeDomain(input)}catch{return null}const homepageUrl=`https://${domain}`;let homepage:Response;try{homepage=await fetchText(homepageUrl)}catch{return null}if(!homepage.ok||!homepage.headers.get('content-type')?.includes('text/html'))return null;const resolvedHomepage=homepage.url||homepageUrl;let canonicalDomain=domain;try{canonicalDomain=new URL(resolvedHomepage).hostname.toLowerCase().replace(/^www\./,'')}catch{}const html=(await homepage.text()).slice(0,1_500_000);const fingerprintVerified=hasShopifyFingerprint(html);const meta=extractMeta(html,resolvedHomepage);const locale=localeSignals(html);let products:VerifiedStore['products']=[];let productFeedVerified=false;try{const c=new AbortController();const t=setTimeout(()=>c.abort(),9000);const response=await fetch(`${resolvedHomepage.replace(/\/$/,'')}/products.json?limit=48`,{headers:{'User-Agent':USER_AGENT,Accept:'application/json'},redirect:'follow',cache:'no-store',signal:c.signal}).finally(()=>clearTimeout(t));if(response.ok){const payload=await response.json() as ShopifyProductsResponse;if(Array.isArray(payload.products)){productFeedVerified=true;const seenHandles=new Set<string>(),seenImages=new Set<string>(),seenFamilies=new Set<string>();products=payload.products.flatMap(product=>{if(!product.title||!product.handle||seenHandles.has(product.handle))return[];const imageUrl=product.image?.src??product.images?.[0]?.src;const imageKey=canonicalImage(imageUrl),familyKey=familyTitle(product.title);if((imageKey&&seenImages.has(imageKey))||(familyKey&&seenFamilies.has(familyKey)))return[];seenHandles.add(product.handle);if(imageKey)seenImages.add(imageKey);if(familyKey)seenFamilies.add(familyKey);const n=product.variants?.[0]?.price?Number(product.variants[0].price):undefined;return[{external_id:product.id!=null?String(product.id):undefined,handle:product.handle,title:product.title,price:Number.isFinite(n)?n:undefined,image_url:imageUrl,product_url:`${resolvedHomepage.replace(/\/$/,'')}/products/${product.handle}`,raw:product}]})}}}catch{}if(!fingerprintVerified&&!productFeedVerified)return null;let score=55;if(productFeedVerified)score+=10;if(products.length>=3)score+=15;if(meta.description)score+=10;if(meta.logoUrl)score+=5;if(products.some(p=>p.image_url))score+=10;if(products.some(p=>p.price!=null))score+=5;return{domain:canonicalDomain,name:meta.name,homepageUrl:resolvedHomepage,description:meta.description,logoUrl:meta.logoUrl,shopifyVerified:true,language:locale.language,country:locale.country,products,score:Math.min(score,100)}}
+export type VerifiedStore = {
+  domain: string;
+  name: string;
+  homepageUrl: string;
+  description?: string;
+  logoUrl?: string;
+  shopifyVerified: boolean;
+  language?: string;
+  country?: string;
+  products: Array<{
+    external_id?: string;
+    handle?: string;
+    title: string;
+    price?: number;
+    image_url?: string;
+    product_url: string;
+    raw: ShopifyProduct;
+  }>;
+  score: number;
+};
 
-export async function persistCandidate(candidate:DiscoveryCandidate,verified:VerifiedStore){const now=new Date().toISOString(),source=candidate.source||'manual',autoApproved=verified.shopifyVerified&&verified.products.length>0;const country=candidate.country||verified.country||null;const storeRows=await supabaseRest<Array<{id:string}>>('stores?on_conflict=domain',{method:'POST',prefer:'resolution=merge-duplicates,return=representation',body:JSON.stringify({domain:verified.domain,name:verified.name,platform:'shopify',homepage_url:verified.homepageUrl,logo_url:verified.logoUrl??null,description:verified.description??null,country,source,source_first_detected_at:candidate.firstDetectedAt??null,estimated_launch_at:candidate.firstDetectedAt??now,last_seen_at:now,discovery_score:verified.score,shopify_verified:true,status:autoApproved?'approved':'pending',raw_meta:{source,autoApproved,originalCandidateDomain:candidate.domain,language:verified.language??null,countrySignal:verified.country??null,...(candidate.metadata??{}),...(source==='builtwith'?{builtwith:{spend:candidate.spend,sku:candidate.sku,revenue:candidate.revenue,lastDetectedAt:candidate.lastDetectedAt}}:{})}})})});const storeId=storeRows[0]?.id;if(!storeId)throw new Error(`No store id returned for ${verified.domain}`);if(verified.products.length)await supabaseRest('products?on_conflict=store_id,product_url',{method:'POST',prefer:'resolution=merge-duplicates,return=minimal',body:JSON.stringify(verified.products.map(product=>({store_id:storeId,external_id:product.external_id??null,handle:product.handle??null,title:product.title,price:product.price??null,image_url:product.image_url??null,product_url:product.product_url,last_seen_at:now,active:true,raw:{...product.raw,earlyfind:{detected_language:verified.language??null,country_code:country}}}))) });return{storeId,productCount:verified.products.length,autoApproved}}
+function normalizeDomain(input: string) {
+  const raw = input.trim().toLowerCase();
+  const value = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `https://${raw}`;
+  return new URL(value).hostname.replace(/^www\./, '');
+}
+
+function absoluteUrl(value: string | undefined, base: string) {
+  if (!value) return undefined;
+  try { return new URL(value, base).toString(); } catch { return undefined; }
+}
+
+function canonicalImage(value?: string) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    let path = decodeURIComponent(url.pathname).toLowerCase();
+    path = path.replace(/_(?:pico|icon|thumb|small|compact|medium|large|grande|original|master|\d+x\d*|x\d+)(?=\.[a-z0-9]+$)/i, '');
+    return `${url.hostname.replace(/^www\./, '').toLowerCase()}${path}`;
+  } catch {
+    return value.split('?')[0].toLowerCase();
+  }
+}
+
+function familyTitle(value: string) {
+  return value.toLowerCase().normalize('NFKD').replace(/[–—]/g, '-')
+    .replace(/\b(?:gr\.?|größe|groesse|size|taille)\s*[:.\-]?\s*(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{1,3})\b/gi, ' ')
+    .replace(/\b(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\b\s*$/gi, ' ')
+    .replace(/\b(?:small|medium|large|extra small|extra large)\b\s*$/gi, ' ')
+    .replace(/[\s|,_-]+/g, ' ').trim();
+}
+
+function extractMeta(html: string, base: string) {
+  const title = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+  const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  const description = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] ??
+    html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  const image = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1];
+  return {
+    name: (ogTitle || title || new URL(base).hostname).replace(/\s*[|–—-]\s*.*$/, '').trim(),
+    description: description?.trim(),
+    logoUrl: absoluteUrl(image, base),
+  };
+}
+
+function hasShopifyFingerprint(html: string) {
+  const lower = html.toLowerCase();
+  return ['cdn.shopify.com','shopify.theme','shopify-section','myshopify.com','shopify-payment-button','shopify.routes'].some((x) => lower.includes(x));
+}
+
+function localeSignals(html: string) {
+  const lang = (html.match(/<html[^>]+lang=["']([^"']+)["']/i)?.[1] || html.match(/property=["']og:locale["'][^>]+content=["']([^"']+)/i)?.[1] || '').replace('_','-').toLowerCase();
+  const country = (html.match(/(?:countryCode|country_code|country)\s*["']?\s*[:=]\s*["']([A-Z]{2})["']/)?.[1] || '').toUpperCase();
+  return { language: lang.split('-')[0] || undefined, country: country || undefined };
+}
+
+async function fetchText(url: string, timeoutMs = 9000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
+      redirect: 'follow', cache: 'no-store', signal: controller.signal,
+    });
+  } finally { clearTimeout(timeout); }
+}
+
+export async function verifyShopifyStore(input: string): Promise<VerifiedStore | null> {
+  let domain: string;
+  try { domain = normalizeDomain(input); } catch { return null; }
+  const homepageUrl = `https://${domain}`;
+  let homepage: Response;
+  try { homepage = await fetchText(homepageUrl); } catch { return null; }
+  if (!homepage.ok || !homepage.headers.get('content-type')?.includes('text/html')) return null;
+
+  const resolvedHomepage = homepage.url || homepageUrl;
+  let canonicalDomain = domain;
+  try { canonicalDomain = new URL(resolvedHomepage).hostname.toLowerCase().replace(/^www\./, ''); } catch {}
+
+  const html = (await homepage.text()).slice(0, 1_500_000);
+  const fingerprintVerified = hasShopifyFingerprint(html);
+  const meta = extractMeta(html, resolvedHomepage);
+  const locale = localeSignals(html);
+  let products: VerifiedStore['products'] = [];
+  let productFeedVerified = false;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 9000);
+    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=48`, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      redirect: 'follow', cache: 'no-store', signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    if (response.ok) {
+      const payload = await response.json() as ShopifyProductsResponse;
+      if (Array.isArray(payload.products)) {
+        productFeedVerified = true;
+        const seenHandles = new Set<string>();
+        const seenImages = new Set<string>();
+        const seenFamilies = new Set<string>();
+        products = payload.products.flatMap((product) => {
+          if (!product.title || !product.handle || seenHandles.has(product.handle)) return [];
+          const imageUrl = product.image?.src ?? product.images?.[0]?.src;
+          const imageKey = canonicalImage(imageUrl);
+          const familyKey = familyTitle(product.title);
+          if ((imageKey && seenImages.has(imageKey)) || (familyKey && seenFamilies.has(familyKey))) return [];
+          seenHandles.add(product.handle);
+          if (imageKey) seenImages.add(imageKey);
+          if (familyKey) seenFamilies.add(familyKey);
+          const n = product.variants?.[0]?.price ? Number(product.variants[0].price) : undefined;
+          return [{
+            external_id: product.id != null ? String(product.id) : undefined,
+            handle: product.handle,
+            title: product.title,
+            price: Number.isFinite(n) ? n : undefined,
+            image_url: imageUrl,
+            product_url: `${resolvedHomepage.replace(/\/$/, '')}/products/${product.handle}`,
+            raw: product,
+          }];
+        });
+      }
+    }
+  } catch {}
+
+  if (!fingerprintVerified && !productFeedVerified) return null;
+  let score = 55;
+  if (productFeedVerified) score += 10;
+  if (products.length >= 3) score += 15;
+  if (meta.description) score += 10;
+  if (meta.logoUrl) score += 5;
+  if (products.some((p) => p.image_url)) score += 10;
+  if (products.some((p) => p.price != null)) score += 5;
+
+  return {
+    domain: canonicalDomain,
+    name: meta.name,
+    homepageUrl: resolvedHomepage,
+    description: meta.description,
+    logoUrl: meta.logoUrl,
+    shopifyVerified: true,
+    language: locale.language,
+    country: locale.country,
+    products,
+    score: Math.min(score, 100),
+  };
+}
+
+export async function persistCandidate(candidate: DiscoveryCandidate, verified: VerifiedStore) {
+  const now = new Date().toISOString();
+  const source = candidate.source || 'manual';
+  const autoApproved = verified.shopifyVerified && verified.products.length > 0;
+  const country = candidate.country || verified.country || null;
+
+  const rawMeta: Record<string, unknown> = {
+    source,
+    autoApproved,
+    originalCandidateDomain: candidate.domain,
+    language: verified.language ?? null,
+    countrySignal: verified.country ?? null,
+    ...(candidate.metadata ?? {}),
+  };
+
+  if (source === 'builtwith') {
+    rawMeta.builtwith = {
+      spend: candidate.spend,
+      sku: candidate.sku,
+      revenue: candidate.revenue,
+      lastDetectedAt: candidate.lastDetectedAt,
+    };
+  }
+
+  const storeRows = await supabaseRest<Array<{ id: string }>>('stores?on_conflict=domain', {
+    method: 'POST',
+    prefer: 'resolution=merge-duplicates,return=representation',
+    body: JSON.stringify({
+      domain: verified.domain,
+      name: verified.name,
+      platform: 'shopify',
+      homepage_url: verified.homepageUrl,
+      logo_url: verified.logoUrl ?? null,
+      description: verified.description ?? null,
+      country,
+      source,
+      source_first_detected_at: candidate.firstDetectedAt ?? null,
+      estimated_launch_at: candidate.firstDetectedAt ?? now,
+      last_seen_at: now,
+      discovery_score: verified.score,
+      shopify_verified: true,
+      status: autoApproved ? 'approved' : 'pending',
+      raw_meta: rawMeta,
+    }),
+  });
+
+  const storeId = storeRows[0]?.id;
+  if (!storeId) throw new Error(`No store id returned for ${verified.domain}`);
+
+  if (verified.products.length) {
+    const rows = verified.products.map((product) => ({
+      store_id: storeId,
+      external_id: product.external_id ?? null,
+      handle: product.handle ?? null,
+      title: product.title,
+      price: product.price ?? null,
+      image_url: product.image_url ?? null,
+      product_url: product.product_url,
+      last_seen_at: now,
+      active: true,
+      raw: {
+        ...product.raw,
+        earlyfind: {
+          detected_language: verified.language ?? null,
+          country_code: country,
+        },
+      },
+    }));
+
+    await supabaseRest('products?on_conflict=store_id,product_url', {
+      method: 'POST',
+      prefer: 'resolution=merge-duplicates,return=minimal',
+      body: JSON.stringify(rows),
+    });
+  }
+
+  return { storeId, productCount: verified.products.length, autoApproved };
+}
