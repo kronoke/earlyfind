@@ -34,7 +34,7 @@ type CategoryName = "Clothing" | "Home" | "Beauty" | "Jewelry" | "Tech" | "Gifts
 const CATEGORY_ORDER: CategoryName[] = ["Clothing", "Home", "Beauty", "Jewelry", "Tech", "Gifts", "Art", "Food", "Other"];
 
 const CATEGORY_KEYWORDS: Record<Exclude<CategoryName, "Other">, string[]> = {
-  Clothing: ["shirt", "tee", "hoodie", "sweater", "dress", "jacket", "coat", "pants", "jeans", "shorts", "skirt", "apparel", "clothing", "fashion", "sock", "hat", "cap", "beanie", "shoe", "sneaker", "boot", "bag", "tote"],
+  Clothing: ["shirt", "tee", "hoodie", "sweater", "dress", "jacket", "coat", "pants", "jeans", "shorts", "skirt", "apparel", "clothing", "fashion", "sock", "hat", "cap", "beanie", "shoe", "sneaker", "boot", "bag", "tote", "glove", "protective", "beekeeper", "jacke", "handschuh", "imker", "kleidung", "schuh", "tasche"],
   Home: ["home", "decor", "candle", "lamp", "rug", "pillow", "blanket", "furniture", "kitchen", "mug", "cup", "glass", "vase", "bedding", "bath", "towel", "planter", "storage"],
   Beauty: ["beauty", "skin", "skincare", "serum", "cream", "lotion", "soap", "shampoo", "conditioner", "hair", "makeup", "lip", "cosmetic", "fragrance", "perfume", "body", "nail"],
   Jewelry: ["jewelry", "jewellery", "necklace", "bracelet", "earring", "ring", "pendant", "chain", "gem", "silver", "gold"],
@@ -53,22 +53,20 @@ function normalizeText(value: unknown) {
   return String(value ?? "").toLowerCase();
 }
 
+function keywordScore(text: string, keywords: string[], weight = 1) {
+  return keywords.reduce((total, keyword) => total + (text.includes(keyword) ? weight : 0), 0);
+}
+
 function productCategory(product: ProductRow): CategoryName {
   const store = joinedStore(product.stores);
-  const haystack = [
-    product.title,
-    product.raw?.product_type,
-    product.raw?.tags,
-    product.raw?.vendor,
-    store?.name,
-    store?.description,
-  ].map(normalizeText).join(" ");
+  const primary = [product.title, product.raw?.product_type, product.raw?.tags, product.raw?.vendor].map(normalizeText).join(" ");
+  const secondary = [store?.name, store?.description].map(normalizeText).join(" ");
 
   let best: CategoryName = "Other";
   let bestScore = 0;
   for (const category of CATEGORY_ORDER) {
     if (category === "Other") continue;
-    const score = CATEGORY_KEYWORDS[category].reduce((total, keyword) => total + (haystack.includes(keyword) ? 1 : 0), 0);
+    const score = keywordScore(primary, CATEGORY_KEYWORDS[category], 3) + keywordScore(secondary, CATEGORY_KEYWORDS[category], 1);
     if (score > bestScore) {
       best = category;
       bestScore = score;
@@ -88,18 +86,57 @@ function canonicalProductKey(product: ProductRow) {
   }
 }
 
+function canonicalImageKey(product: ProductRow) {
+  if (!product.image_url) return null;
+  try {
+    const url = new URL(product.image_url);
+    let path = decodeURIComponent(url.pathname).toLowerCase();
+    path = path.replace(/_(?:pico|icon|thumb|small|compact|medium|large|grande|original|master|\d+x\d*|x\d+)(?=\.[a-z0-9]+$)/i, "");
+    return `${url.hostname.replace(/^www\./, "").toLowerCase()}${path}`;
+  } catch {
+    return product.image_url.split("?")[0].toLowerCase();
+  }
+}
+
+function productFamilyTitle(title: string) {
+  return title
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[–—]/g, "-")
+    .replace(/\b(?:gr\.?|größe|groesse|size|taille)\s*[:.\-]?\s*(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl|\d{1,3})\b/gi, " ")
+    .replace(/\b(?:xxxs|xxs|xs|s|m|l|xl|xxl|xxxl)\b\s*$/gi, " ")
+    .replace(/\b(?:small|medium|large|extra small|extra large)\b\s*$/gi, " ")
+    .replace(/[\s|,_-]+/g, " ")
+    .trim();
+}
+
 function dedupeProducts(products: ProductRow[]) {
   const seenUrls = new Set<string>();
   const seenStoreTitles = new Set<string>();
+  const seenStoreImages = new Set<string>();
+  const seenFamilies = new Set<string>();
   const result: ProductRow[] = [];
 
   for (const product of products) {
     const store = joinedStore(product.stores);
+    const storeKey = store?.domain?.replace(/^www\./, "").toLowerCase() || "unknown";
     const urlKey = canonicalProductKey(product);
-    const titleKey = `${store?.domain?.replace(/^www\./, "").toLowerCase() || "unknown"}:${product.title.trim().toLowerCase()}`;
-    if (seenUrls.has(urlKey) || seenStoreTitles.has(titleKey)) continue;
+    const titleKey = `${storeKey}:${product.title.trim().toLowerCase()}`;
+    const familyKey = `${storeKey}:${productFamilyTitle(product.title)}`;
+    const image = canonicalImageKey(product);
+    const imageKey = image ? `${storeKey}:${image}` : null;
+
+    if (
+      seenUrls.has(urlKey) ||
+      seenStoreTitles.has(titleKey) ||
+      seenFamilies.has(familyKey) ||
+      (imageKey && seenStoreImages.has(imageKey))
+    ) continue;
+
     seenUrls.add(urlKey);
     seenStoreTitles.add(titleKey);
+    seenFamilies.add(familyKey);
+    if (imageKey) seenStoreImages.add(imageKey);
     result.push(product);
   }
   return result;
@@ -110,7 +147,7 @@ async function getApprovedProducts() {
 
   try {
     const rows = await supabaseRest<ProductRow[]>(
-      "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=120"
+      "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=180"
     );
     return dedupeProducts(rows);
   } catch (error) {
@@ -123,6 +160,8 @@ function RealProductCard({ product }: { product: ProductRow }) {
   const store = joinedStore(product.stores);
   const storeName = store?.name || store?.domain || "Independent store";
   const category = productCategory(product);
+  const description = store?.description?.replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+  const shortDescription = description && description.length > 180 ? `${description.slice(0, 177)}...` : description;
 
   return (
     <article className="product-card">
@@ -147,7 +186,7 @@ function RealProductCard({ product }: { product: ProductRow }) {
         ) : (
           <span className="product-brand">by {storeName}</span>
         )}
-        <p>{store?.description || `Discovered from ${store?.domain || "an independent Shopify store"}.`}</p>
+        <p>{shortDescription || `Discovered from ${store?.domain || "an independent Shopify store"}.`}</p>
         <div className="product-footer">
           <span style={{ fontSize: 13, opacity: 0.65 }}>Added {new Date(product.first_seen_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
           <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="view-link">Visit product →</a>
@@ -184,7 +223,7 @@ export default async function HomePage() {
             <a href="#categories" className="text-button">Shop categories <span>↓</span></a>
           </div>
           <div className="social-proof">
-            <span><strong>{products.length}</strong> unique products live right now</span>
+            <span><strong>{products.length}</strong> unique product families live right now</span>
           </div>
         </section>
 
@@ -248,7 +287,7 @@ export default async function HomePage() {
           <div className="section-head"><div><span className="eyebrow">The idea</span><h2>A marketplace for small brands.</h2></div></div>
           <div className="steps">
             <div><span>01</span><h3>We discover stores</h3><p>EarlyFind finds emerging independent shops and verifies the storefront before importing products.</p></div>
-            <div><span>02</span><h3>We organize the catalog</h3><p>Products are deduplicated and sorted into useful shopping categories instead of one endless feed.</p></div>
+            <div><span>02</span><h3>We organize the catalog</h3><p>Size and color variants are collapsed into product families and sorted into useful shopping categories.</p></div>
             <div><span>03</span><h3>You shop the merchant</h3><p>Choose something you like and EarlyFind sends you directly to the small business to purchase it.</p></div>
           </div>
         </section>
