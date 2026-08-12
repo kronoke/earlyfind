@@ -6,6 +6,9 @@ type ShopifyProduct = {
   id?: number | string;
   title?: string;
   handle?: string;
+  product_type?: string;
+  tags?: string | string[];
+  vendor?: string;
   variants?: Array<{ price?: string }>;
   images?: Array<{ src?: string }>;
   image?: { src?: string };
@@ -120,6 +123,13 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   if (!homepage.ok || !homepage.headers.get('content-type')?.includes('text/html')) return null;
 
   const resolvedHomepage = homepage.url || homepageUrl;
+  let canonicalDomain = domain;
+  try {
+    canonicalDomain = new URL(resolvedHomepage).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    // Keep the original normalized domain if redirect parsing fails.
+  }
+
   const html = (await homepage.text()).slice(0, 1_500_000);
   const fingerprintVerified = hasShopifyFingerprint(html);
   const meta = extractMeta(html, resolvedHomepage);
@@ -127,17 +137,23 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   let productFeedVerified = false;
 
   try {
-    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=12`, {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 9000);
+    const response = await fetch(`${resolvedHomepage.replace(/\/$/, '')}/products.json?limit=24`, {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
       redirect: 'follow',
       cache: 'no-store',
-    });
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
     if (response.ok) {
       const payload = (await response.json()) as ShopifyProductsResponse;
       if (Array.isArray(payload.products)) {
         productFeedVerified = true;
+        const seenHandles = new Set<string>();
         products = payload.products.flatMap((product) => {
-          if (!product.title || !product.handle) return [];
+          if (!product.title || !product.handle || seenHandles.has(product.handle)) return [];
+          seenHandles.add(product.handle);
           const priceRaw = product.variants?.[0]?.price;
           const price = priceRaw ? Number(priceRaw) : undefined;
           return [{
@@ -167,7 +183,7 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
   if (products.some((product) => product.price != null)) score += 5;
 
   return {
-    domain,
+    domain: canonicalDomain,
     name: meta.name,
     homepageUrl: resolvedHomepage,
     description: meta.description,
@@ -204,6 +220,7 @@ export async function persistCandidate(candidate: DiscoveryCandidate, verified: 
       raw_meta: {
         source,
         autoApproved,
+        originalCandidateDomain: candidate.domain,
         ...(candidate.metadata ?? {}),
         ...(source === 'builtwith'
           ? {
