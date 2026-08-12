@@ -11,6 +11,13 @@ type StoreJoin = {
   status: string;
 };
 
+type ProductRaw = {
+  product_type?: string;
+  tags?: string | string[];
+  vendor?: string;
+  handle?: string;
+};
+
 type ProductRow = {
   id: string;
   title: string;
@@ -18,20 +25,94 @@ type ProductRow = {
   image_url: string | null;
   product_url: string;
   first_seen_at: string;
+  raw: ProductRaw | null;
   stores: StoreJoin | StoreJoin[];
+};
+
+type CategoryName = "Clothing" | "Home" | "Beauty" | "Jewelry" | "Tech" | "Gifts" | "Art" | "Food" | "Other";
+
+const CATEGORY_ORDER: CategoryName[] = ["Clothing", "Home", "Beauty", "Jewelry", "Tech", "Gifts", "Art", "Food", "Other"];
+
+const CATEGORY_KEYWORDS: Record<Exclude<CategoryName, "Other">, string[]> = {
+  Clothing: ["shirt", "tee", "hoodie", "sweater", "dress", "jacket", "coat", "pants", "jeans", "shorts", "skirt", "apparel", "clothing", "fashion", "sock", "hat", "cap", "beanie", "shoe", "sneaker", "boot", "bag", "tote"],
+  Home: ["home", "decor", "candle", "lamp", "rug", "pillow", "blanket", "furniture", "kitchen", "mug", "cup", "glass", "vase", "bedding", "bath", "towel", "planter", "storage"],
+  Beauty: ["beauty", "skin", "skincare", "serum", "cream", "lotion", "soap", "shampoo", "conditioner", "hair", "makeup", "lip", "cosmetic", "fragrance", "perfume", "body", "nail"],
+  Jewelry: ["jewelry", "jewellery", "necklace", "bracelet", "earring", "ring", "pendant", "chain", "gem", "silver", "gold"],
+  Tech: ["tech", "electronic", "charger", "cable", "keyboard", "mouse", "phone", "case", "headphone", "speaker", "gaming", "computer", "usb", "led", "smart"],
+  Gifts: ["gift", "personalized", "custom", "keepsake", "birthday", "wedding", "anniversary", "baby", "pet", "novelty", "card"],
+  Art: ["art", "print", "poster", "painting", "canvas", "illustration", "photography", "sculpture", "ceramic", "craft", "handmade", "book", "journal"],
+  Food: ["food", "snack", "coffee", "tea", "chocolate", "candy", "sauce", "spice", "honey", "cookie", "bakery", "drink", "beverage"],
 };
 
 function joinedStore(value: ProductRow["stores"]): StoreJoin | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function normalizeText(value: unknown) {
+  if (Array.isArray(value)) return value.join(" ").toLowerCase();
+  return String(value ?? "").toLowerCase();
+}
+
+function productCategory(product: ProductRow): CategoryName {
+  const store = joinedStore(product.stores);
+  const haystack = [
+    product.title,
+    product.raw?.product_type,
+    product.raw?.tags,
+    product.raw?.vendor,
+    store?.name,
+    store?.description,
+  ].map(normalizeText).join(" ");
+
+  let best: CategoryName = "Other";
+  let bestScore = 0;
+  for (const category of CATEGORY_ORDER) {
+    if (category === "Other") continue;
+    const score = CATEGORY_KEYWORDS[category].reduce((total, keyword) => total + (haystack.includes(keyword) ? 1 : 0), 0);
+    if (score > bestScore) {
+      best = category;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function canonicalProductKey(product: ProductRow) {
+  const store = joinedStore(product.stores);
+  try {
+    const url = new URL(product.product_url);
+    const path = url.pathname.replace(/\/$/, "").toLowerCase();
+    return `${url.hostname.replace(/^www\./, "").toLowerCase()}${path}`;
+  } catch {
+    return `${store?.domain || "unknown"}:${product.title.trim().toLowerCase()}`;
+  }
+}
+
+function dedupeProducts(products: ProductRow[]) {
+  const seenUrls = new Set<string>();
+  const seenStoreTitles = new Set<string>();
+  const result: ProductRow[] = [];
+
+  for (const product of products) {
+    const store = joinedStore(product.stores);
+    const urlKey = canonicalProductKey(product);
+    const titleKey = `${store?.domain?.replace(/^www\./, "").toLowerCase() || "unknown"}:${product.title.trim().toLowerCase()}`;
+    if (seenUrls.has(urlKey) || seenStoreTitles.has(titleKey)) continue;
+    seenUrls.add(urlKey);
+    seenStoreTitles.add(titleKey);
+    result.push(product);
+  }
+  return result;
+}
+
 async function getApprovedProducts() {
   if (!isSupabaseConfigured()) return [] as ProductRow[];
 
   try {
-    return await supabaseRest<ProductRow[]>(
-      "products?select=id,title,price,image_url,product_url,first_seen_at,stores!inner(id,name,domain,homepage_url,description,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=18"
+    const rows = await supabaseRest<ProductRow[]>(
+      "products?select=id,title,price,image_url,product_url,first_seen_at,raw,stores!inner(id,name,domain,homepage_url,description,status)&active=eq.true&stores.status=eq.approved&order=first_seen_at.desc&limit=120"
     );
+    return dedupeProducts(rows);
   } catch (error) {
     console.error("Failed to load approved EarlyFind products", error);
     return [] as ProductRow[];
@@ -41,6 +122,7 @@ async function getApprovedProducts() {
 function RealProductCard({ product }: { product: ProductRow }) {
   const store = joinedStore(product.stores);
   const storeName = store?.name || store?.domain || "Independent store";
+  const category = productCategory(product);
 
   return (
     <article className="product-card">
@@ -52,11 +134,11 @@ function RealProductCard({ product }: { product: ProductRow }) {
             <strong>{product.title}</strong>
           </div>
         )}
-        <span className="product-badge">Verified Shopify store</span>
+        <span className="product-badge">{category}</span>
       </a>
       <div className="product-body">
         <div className="product-meta">
-          <span>Emerging brand</span>
+          <span>{category}</span>
           <span>{product.price != null ? `$${Number(product.price).toFixed(2)}` : "Visit store"}</span>
         </div>
         <a href={product.product_url} target="_blank" rel="noreferrer sponsored" className="product-title">{product.title}</a>
@@ -79,9 +161,14 @@ export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const products = await getApprovedProducts();
-  const topProducts = products.slice(0, 6);
-  const moreProducts = products.slice(6);
   const today = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric" }).format(new Date());
+  const categorized = new Map<CategoryName, ProductRow[]>();
+  for (const product of products) {
+    const category = productCategory(product);
+    categorized.set(category, [...(categorized.get(category) || []), product]);
+  }
+  const activeCategories = CATEGORY_ORDER.filter((category) => (categorized.get(category)?.length || 0) > 0);
+  const newest = products.slice(0, 12);
 
   return (
     <main>
@@ -90,67 +177,86 @@ export default async function HomePage() {
 
         <section className="hero">
           <div className="hero-kicker"><span className="live-dot" /> Real independent stores, updated daily</div>
-          <h1>Find the brands<br />everyone else hasn’t.</h1>
-          <p>Discover real products from emerging online stores — before they become the brands everyone already knows.</p>
+          <h1>Shop small.<br />Find something different.</h1>
+          <p>Browse real products from emerging online stores in one place — like a marketplace for brands you haven’t discovered yet.</p>
           <div className="hero-actions">
-            <a href="#discover" className="button">Explore today’s finds</a>
-            <a href="#how-it-works" className="text-button">How it works <span>↓</span></a>
+            <a href="#discover" className="button">Browse new finds</a>
+            <a href="#categories" className="text-button">Shop categories <span>↓</span></a>
           </div>
           <div className="social-proof">
-            <span><strong>{products.length}</strong> approved products live right now</span>
+            <span><strong>{products.length}</strong> unique products live right now</span>
           </div>
         </section>
 
         <section className="ticker" aria-label="site highlights">
-          <span>Real stores only</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>No mega-brands</span><i>✦</i><span>Direct merchant links</span>
+          <span>Independent stores</span><i>✦</i><span>Shopify verified</span><i>✦</i><span>Real products</span><i>✦</i><span>Direct merchant links</span>
         </section>
+
+        {activeCategories.length > 0 && (
+          <section className="discover" id="categories" style={{ paddingBottom: 20 }}>
+            <div className="section-head">
+              <div><span className="eyebrow">Browse</span><h2>Shop by category</h2></div>
+            </div>
+            <div className="category-row">
+              {activeCategories.map((category) => (
+                <a key={category} href={`#category-${category.toLowerCase()}`} className="button" style={{ textDecoration: "none" }}>
+                  {category} · {categorized.get(category)?.length || 0}
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="discover" id="discover">
           <div className="section-head" id="trending">
-            <div><span className="eyebrow">Today · {today}</span><h2>Newest verified finds</h2></div>
-            <div className="rank-chip">Live catalog</div>
+            <div><span className="eyebrow">Today · {today}</span><h2>Newest finds</h2></div>
+            <div className="rank-chip">Unique products</div>
           </div>
 
-          {topProducts.length > 0 ? (
+          {newest.length > 0 ? (
             <div className="product-grid">
-              {topProducts.map((product) => <RealProductCard key={product.id} product={product} />)}
+              {newest.map((product) => <RealProductCard key={product.id} product={product} />)}
             </div>
           ) : (
             <div style={{ border: "1px dashed #cfc8bd", borderRadius: 20, padding: "52px 24px", textAlign: "center", background: "#faf8f4" }}>
               <span className="eyebrow">Catalog warming up</span>
               <h2 style={{ margin: "10px 0" }}>Finding the first real products.</h2>
-              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>The site stays online while EarlyFind checks a small curated starter batch in the background. Valid Shopify products will appear after import.</p>
+              <p style={{ maxWidth: 620, margin: "0 auto 18px", opacity: 0.72 }}>EarlyFind is checking independent Shopify stores in the background. Valid products appear automatically after import.</p>
               <StarterBootstrap enabled={isSupabaseConfigured()} />
               <a className="button" style={{ marginTop: 18 }} href="/admin/discovery">Open discovery tools</a>
             </div>
           )}
         </section>
 
-        {moreProducts.length > 0 && (
-          <section className="split-section" id="new">
-            <div className="section-copy">
-              <span className="eyebrow">Recently discovered</span>
-              <h2>Small brands.<br />Real products.</h2>
-              <p>Every product here comes from a Shopify storefront that EarlyFind verified before adding it to the catalog.</p>
-              <a className="inline-link" href="#more">Browse more finds →</a>
-            </div>
-            <div className="mini-grid" id="more">{moreProducts.map((product) => <RealProductCard key={product.id} product={product} />)}</div>
-          </section>
-        )}
+        {activeCategories.map((category) => {
+          const categoryProducts = categorized.get(category) || [];
+          if (categoryProducts.length === 0) return null;
+          return (
+            <section className="discover" id={`category-${category.toLowerCase()}`} key={category} style={{ paddingTop: 30 }}>
+              <div className="section-head">
+                <div><span className="eyebrow">Shop small</span><h2>{category}</h2></div>
+                <div className="rank-chip">{categoryProducts.length} finds</div>
+              </div>
+              <div className="product-grid">
+                {categoryProducts.slice(0, 12).map((product) => <RealProductCard key={`${category}-${product.id}`} product={product} />)}
+              </div>
+            </section>
+          );
+        })}
 
         <section className="how" id="how-it-works">
-          <div className="section-head"><div><span className="eyebrow">The idea</span><h2>Discovery that compounds.</h2></div></div>
+          <div className="section-head"><div><span className="eyebrow">The idea</span><h2>A marketplace for small brands.</h2></div></div>
           <div className="steps">
-            <div><span>01</span><h3>We find what’s new</h3><p>EarlyFind collects candidate emerging stores from free sources today and richer discovery feeds later.</p></div>
-            <div><span>02</span><h3>We verify the storefront</h3><p>The crawler checks for Shopify fingerprints and usable public products before a store can appear.</p></div>
-            <div><span>03</span><h3>Shoppers discover them</h3><p>Visitors click directly through to the merchant, giving small brands another source of discovery and referral traffic.</p></div>
+            <div><span>01</span><h3>We discover stores</h3><p>EarlyFind finds emerging independent shops and verifies the storefront before importing products.</p></div>
+            <div><span>02</span><h3>We organize the catalog</h3><p>Products are deduplicated and sorted into useful shopping categories instead of one endless feed.</p></div>
+            <div><span>03</span><h3>You shop the merchant</h3><p>Choose something you like and EarlyFind sends you directly to the small business to purchase it.</p></div>
           </div>
         </section>
 
         <section className="brand-cta">
           <span className="eyebrow light">For independent brands</span>
           <h2>Launching something worth finding?</h2>
-          <p>Get your product in front of people actively looking for what’s next. Early listings are free.</p>
+          <p>Get your products in front of people actively looking for independent brands. Early listings are free.</p>
           <a href="/claim" className="button light-button">Submit your store</a>
         </section>
 
