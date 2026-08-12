@@ -199,7 +199,10 @@ export async function verifyShopifyStore(input: string): Promise<VerifiedStore |
 export async function persistCandidate(candidate: DiscoveryCandidate, verified: VerifiedStore) {
   const now = new Date().toISOString();
   const source = candidate.source || 'manual';
-  const autoApproved = verified.shopifyVerified && verified.products.length > 0;
+  const language = verified.language?.toLowerCase();
+  const isEnglish = language === 'en';
+  const languageUnknown = !language;
+  const autoApproved = verified.shopifyVerified && verified.products.length > 0 && isEnglish;
   const country = candidate.country || verified.country || null;
 
   const rawMeta: Record<string, unknown> = {
@@ -207,6 +210,8 @@ export async function persistCandidate(candidate: DiscoveryCandidate, verified: 
     autoApproved,
     originalCandidateDomain: candidate.domain,
     language: verified.language ?? null,
+    languageReviewRequired: languageUnknown,
+    excludedNonEnglish: Boolean(language && language !== 'en'),
     countrySignal: verified.country ?? null,
     ...(candidate.metadata ?? {}),
   };
@@ -255,7 +260,7 @@ export async function persistCandidate(candidate: DiscoveryCandidate, verified: 
       image_url: product.image_url ?? null,
       product_url: product.product_url,
       last_seen_at: now,
-      active: true,
+      active: isEnglish,
       raw: {
         ...product.raw,
         earlyfind: {
